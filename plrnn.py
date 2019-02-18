@@ -33,10 +33,7 @@ class PLRNN(nn.Module):
         self.R = nn.Parameter(tc.rand(nx, ))
 
         self.Z = nn.Parameter(tc.randn(nz, nt))
-        # self.X = nn.Parameter(tc.randn(nx, nt))
         self.z0 = nn.Parameter(tc.randn(nz))
-
-        # self.print_par()
 
         # TODO: create AW as a general positive semi-definite matrix
         # generate an (n + 1) × (n + 1) orthogonal matrix,
