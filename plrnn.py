@@ -15,25 +15,26 @@ class PLRNN(nn.Module):
     x(t) ~ N(NN(z(t)), R * R')
 
     """
+    # TODO add stability criterion: divide by eigenvalues
     # TODO incorporate K st
-    def __init__(self, nz, nx, nt):
+    def __init__(self, ts_par):
         super(PLRNN, self).__init__()
-        self.dim_x = nx
-        self.dim_z = nz
-        self.len_t = nt
+        self.dim_x = ts_par['dim_x']
+        self.dim_z = ts_par['dim_z']
+        self.len_t = ts_par['len_t']
 
         f = 0.5  # AW needs to be positive semi-definite, works ok
-        mat = f * (tc.rand(nz, nz)-1)  # some matrix with values between -0.5 and 0.5
+        mat = f * (tc.rand(self.dim_z, self.dim_z) - 1)  # some matrix with values between -0.5 and 0.5
         self.AW = nn.Parameter(tc.mm(mat.t(), mat))
-        self.h = nn.Parameter(tc.randn(nz, ))  # first dim is batch
-        self.B = nn.Parameter(tc.randn(nx, nz))
+        self.h = nn.Parameter(tc.randn(self.dim_z, ))  # first dim is batch
+        self.B = nn.Parameter(tc.randn(self.dim_x, self.dim_z))
 
-        self.Q0 = nn.Parameter(tc.rand(nz, ))  # TODO add generalization to non-diagonal
-        self.Q = nn.Parameter(tc.rand(nz, ))
-        self.R = nn.Parameter(tc.rand(nx, ))
+        self.Q0 = nn.Parameter(tc.rand(self.dim_z, ))  # TODO add generalization to non-diagonal
+        self.Q = nn.Parameter(tc.rand(self.dim_z, ))
+        self.R = nn.Parameter(tc.rand(self.dim_x, ))
 
-        self.Z = nn.Parameter(tc.randn(nz, nt))
-        self.z0 = nn.Parameter(tc.randn(nz))
+        self.Z = nn.Parameter(tc.randn(self.dim_z, self.len_t))
+        self.z0 = nn.Parameter(tc.randn(self.dim_z))
 
         # TODO: create AW as a general positive semi-definite matrix
         # generate an (n + 1) × (n + 1) orthogonal matrix,
@@ -72,7 +73,7 @@ class PLRNN(nn.Module):
         zt = self.Q0 * tc.randn(self.dim_z)  # z0
         for t in range(self.len_t):
             eps = self.Q * tc.randn(self.dim_z)
-            zt = A @ zt + W @ F.relu(zt) + self.h + eps  # TODO make module
+            zt = A @ zt + W @ F.relu(zt) + self.h + eps  # TODO make nn module
             Z[:, t] = zt
         return Z
 
@@ -85,7 +86,15 @@ class PLRNN(nn.Module):
             X[:, t] = xt
         return X, Z
 
+    def get_timeseries(self):
+        X, Z = self.forward()
+        X = X.detach()
+        Z = Z.detach()
+        return X, Z
+
     def eval_logdensity(self, X, Z):
+        # Z.shape = (T, dim_z)
+        # X.shape = (T, dim_x)
         A = tc.diag(tc.diag(self.AW))
         W = self.AW - A
         T = X.shape[1]
