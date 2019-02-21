@@ -1,9 +1,7 @@
-# Build a network class
 import torch.nn as nn
 import torch.nn.functional as F
 import torch as tc
 import numpy as np
-import numpy.random as r
 from matplotlib import pyplot as plt
 
 
@@ -15,8 +13,8 @@ class PLRNN(nn.Module):
     x(t) ~ N(NN(z(t)), R * R')
 
     """
-    # TODO add stability criterion: divide by eigenvalues
     # TODO incorporate K st
+    # TODO add generalization to non-diagonal covariance Q, R
     def __init__(self, ts_par):
         super(PLRNN, self).__init__()
         self.dim_x = ts_par['dim_x']
@@ -25,26 +23,22 @@ class PLRNN(nn.Module):
 
         f = 0.5  # AW needs to be positive semi-definite, works ok
         mat = f * (tc.rand(self.dim_z, self.dim_z) - 1)  # some matrix with values between -0.5 and 0.5
-        self.AW = nn.Parameter(tc.mm(mat.t(), mat))
+        mat = tc.mm(mat, mat.t())  # symmetric positive semi-def.
+        # max_ev = tc.max(tc.symeig(mat))
+        # mat /= max_ev  # stability criterion: divide by eigenvalues
+        self.AW = nn.Parameter(mat)
+
         self.h = nn.Parameter(tc.randn(self.dim_z, ))  # first dim is batch
         self.B = nn.Parameter(tc.randn(self.dim_x, self.dim_z))
 
-        self.Q0 = nn.Parameter(tc.rand(self.dim_z, ))  # TODO add generalization to non-diagonal
+        self.Q0 = nn.Parameter(tc.rand(self.dim_z, ))  # covariance matrix diagonals
         self.Q = nn.Parameter(tc.rand(self.dim_z, ))
         self.R = nn.Parameter(tc.rand(self.dim_x, ))
 
         self.Z = nn.Parameter(tc.randn(self.dim_z, self.len_t))
         self.z0 = nn.Parameter(tc.randn(self.dim_z))
 
-        # TODO: create AW as a general positive semi-definite matrix
-        # generate an (n + 1) × (n + 1) orthogonal matrix,
-        # take an n × n one and a uniformly distributed unit vector of dimension n + 1.
-        # Construct a Householder reflection from the vector, then apply it to the smaller matrix
-        # (embedded in the larger size with a 1 at the bottom right corner).
-        # make general matrix with U L V^T with U, V orthogonal and L diagonal
-        # with all entries smaller one
-
-    def plot_xz(self, block=False):
+    def show(self, block=False):
         plt.subplot(121)
         plt.title('latent states')
         plt.xlabel('time')
@@ -88,13 +82,11 @@ class PLRNN(nn.Module):
 
     def get_timeseries(self):
         X, Z = self.forward()
-        X = X.detach()
+        X = X.detach()  # interrupts loss signal
         Z = Z.detach()
         return X, Z
 
     def eval_logdensity(self, X, Z):
-        # Z.shape = (T, dim_z)
-        # X.shape = (T, dim_x)
         A = tc.diag(tc.diag(self.AW))
         W = self.AW - A
         T = X.shape[1]
@@ -113,5 +105,3 @@ class PLRNN(nn.Module):
         return dist(resX, self.R) + dist(resZ, self.Q) + dist(resZ0, self.Q0) \
             + logdet(self.R) * T + logdet(self.Q) * (T-1) + logdet(self.Q0)\
             - 0.5 * (self.dim_z + self.dim_x) * np.log(2*np.pi) * T
-
-

@@ -78,14 +78,14 @@ class SequentialVAE(nn.Module):
         super(SequentialVAE, self).__init__()
         self.dim_z = ts_par['dim_z']
         self.dim_x = ts_par['dim_x']
-        self.dim_h = hidden_size  # TODO adjust architecture
+        self.dim_h = self.dim_x  # TODO tune hyper-parameters
         self.X = X.clone().detach().t()  # no need for dataloader, only one sample.
         self.T = ts_par['len_t']
 
         self.fc1 = nn.Linear(self.dim_x, self.dim_h)
         self.fc_mu = nn.Linear(self.dim_h, self.dim_z)
-        self.fc_A = nn.Linear(self.dim_h, self.dim_z * self.dim_z)
-        self.fc_B = nn.Linear(2 * self.dim_h, self.dim_z * self.dim_z)  # TODO xt xt-1
+        self.fc_A = nn.Linear(self.dim_h, self.dim_z * self.dim_z)  # A = NN(xt)
+        self.fc_B = nn.Linear(2 * self.dim_h, self.dim_z * self.dim_z)  # B = NN(xt, xt-1)
 
     def encode(self, x):
         """
@@ -103,29 +103,34 @@ class SequentialVAE(nn.Module):
         A = A.view(-1, self.dim_z, self.dim_z)
         B = B.view(-1, self.dim_z, self.dim_z)
 
-        # assert(mu.shape == (self.T, self.dim_z))
-        # assert(A.shape == (self.T, self.dim_z, self.dim_z))
-        # assert(B.shape == (self.T-1, self.dim_z, self.dim_z))
         return mu, A, B
 
-    def get_chol(self, A, B):
-        # make positive semi-definite block tri-diagonal
+    def make_psd(self, A, B):  # TODO needs review, somehow sometimes not positive semi-definite
+        """
+        Make a block-tridiagonal matrix positive semi-definite: amounts to mat*mat^T
+        :param A, B: diagonal, off-diagonal blocks. shape: (T, dim_z, dim_z), (T-1, dim_z, dim_z)
+        :return: AA, BB: blocks in psd
+        """
         def b_t(mat):  # batch transpose
             return tc.einsum('bij->bji', mat)
         diag_square = tc.bmm(A, b_t(A))  # make pos. semi-def.
         offd_square = tc.bmm(B, b_t(B))  # shape (T-1, dim_z, dim_z)
-        offd_square = tc.cat((tc.zeros(1, self.dim_z, self.dim_z), offd_square))  # reshape
-        pos_const = 1000  # TODO smaller constant, in general this is ugly
+        offd_square = tc.cat((tc.zeros(1, self.dim_z, self.dim_z), offd_square))  # reshape from T-1 to T
+        pos_const = 1  # this seems to be needed, is the matrix not pos. semi-def. already?
         AA = tc.add(diag_square, offd_square).add(pos_const * tc.eye(self.dim_z))  # + positive constant
-        BB = tc.bmm(A[:-1], b_t(B))
-
-        # get cholesky of block tri-diagonal
-        chol_A, chol_B = h.blk_tridag_chol(AA, BB)
-        return chol_A, chol_B
+        BB = tc.bmm(A[:-1], b_t(B))  # what is this doing?
+        # def is_psd(self, mat):
+        # ev, _ = tc.symeig(mat)
+        # return (ev >= 0).sum() == len(ev)  # are all Eigenvalues greater equal zero?
+        # for t in range(self.len_t):
+        # assert self.is_psd(AA[t])
+        # TODO how to assert that overall matrix is psd?
+        return AA, BB
 
     def forward(self, X):
-        mu, A, B = self.encode(X)
-        chol_A, chol_B = self.get_chol(A, B)
+        mu, A, B = self.encode(X)  # encode mean and covariance with neural net on observations
+        AA, BB = self.make_psd(A, B)  # make positive semi-definite
+        chol_A, chol_B = h.blk_tridag_chol(AA, BB)  # get cholesky from block tri-diagonal
         return mu, chol_A, chol_B
 
     def get_inv_chol(self, A, B):
@@ -137,6 +142,8 @@ class SequentialVAE(nn.Module):
         X = self.X
         mu, A, B = self.forward(X)
         r = self.get_inv_chol(A, B)
+        thresh = 1e-5
+        r = tc.add(F.relu(tc.add(r, -thresh)), thresh)  # make positive, negative value would be nan after log
         logdet_ = - tc.log(tc.einsum('tii->ti', r)).sum()  # -2 * 1/2
         return logdet_ + self.dim_x * self.T / 2. * (1 + np.log(2 * np.pi))
 
@@ -144,9 +151,7 @@ class SequentialVAE(nn.Module):
         X = self.X  # "sample" observations (only one time series)
         mu, A, B = self.forward(X)  # get mean and tridiagonal form of cholesky of covariance
         r = self.get_inv_chol(A, B)
-        # sample from normal distr. with mean mu and std s
-        eps = tc.randn_like(mu)
+        eps = tc.randn_like(mu)  # sample from normal distr. with mean mu and std s
         r = tc.einsum('tij->tji', r)  # transpose TODO could be simplified
         z = mu + tc.einsum('tij,tj->ti', r, eps)  # equivalent to tc.bmv
-
         return z  # shape (T, dim_z)

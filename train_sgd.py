@@ -17,7 +17,7 @@ def train_sgd(true_model):
 
     cuda = False
     device = tc.device("cuda" if cuda else "cpu")
-    model = plrnn.PLRNN(true_model.nz, true_model.nx, true_model.len_t).to(device)
+    model = plrnn.PLRNN(ts_par=true_model.ts_par).to(device)
     print(true_model.eval_logdensity(X, Z))
     print(model.eval_logdensity(X, model.Z))
 

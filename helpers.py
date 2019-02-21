@@ -47,19 +47,18 @@ def blk_tridag_chol(A, B):
         * R[1] - [T-1 x n x n] tensor of (lower) 1st block off-diagonal elements of Cholesky
 
     """
-    # print('This function is not tested')
-    # raise NotImplementedError
     T = A.shape[0]
     n = A.shape[1]
     assert(A.shape == (T, n, n))
     assert(B.shape == (T-1, n, n))
-    # Code for computing the cholesky decomposition of a symmetric block tridiagonal matrix
 
-    def compute_chol(Aip1, Bi, Li, Ci):
+    # Code for computing the cholesky decomposition of a symmetric block tridiagonal matrix
+    def compute_chol(Aip1, Bi, Li):
         Ci = Bi @ tc.inverse(Li).t()
         # Ci = T.dot(Bi.T, Tla.matrix_inverse(Li).T)
         Dii = Aip1 - Ci @ Ci.t()
         # Dii = Aip1 - T.dot(Ci, Ci.T)
+
         Lii = tc.cholesky(Dii)
         # Lii = Tsla.cholesky(Dii)
         return [Lii, Ci]
@@ -71,7 +70,7 @@ def blk_tridag_chol(A, B):
     C[0] = tc.zeros_like(B[0])
     # C1 = T.zeros_like(B[0])
     for t in range(0, len(B)):  # T-1
-        L[t+1], C[t] = compute_chol(A[t+1], B[t], L[t], C[t])
+        L[t+1], C[t] = compute_chol(A[t+1], B[t], L[t])
     # this scan returns the diagonal and off-diagonal blocks of the cholesky decomposition
     # mat, updates = theano.scan(fn=compute_chol, sequences=[A[1:], B], outputs_info=[L1,C1])
     return [L, C]
