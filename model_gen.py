@@ -5,6 +5,8 @@ import numpy as np
 from matplotlib import pyplot as plt
 
 
+# TODO add LDS
+
 class PLRNN(nn.Module):
     """
     Piece-wise linear recurrent neural network
@@ -15,11 +17,11 @@ class PLRNN(nn.Module):
     """
     # TODO incorporate K st
     # TODO add generalization to non-diagonal covariance Q, R
-    def __init__(self, ts_par):
+    def __init__(self, args):
         super(PLRNN, self).__init__()
-        self.dim_x = ts_par['dim_x']
-        self.dim_z = ts_par['dim_z']
-        self.len_t = ts_par['len_t']
+        self.dim_x = args.dx
+        self.dim_z = args.dz
+        self.len_t = args.T
 
         f = 0.5  # AW needs to be positive semi-definite, works ok
         mat = f * (tc.rand(self.dim_z, self.dim_z) - 1)  # some matrix with values between -0.5 and 0.5
@@ -105,3 +107,5 @@ class PLRNN(nn.Module):
         return dist(resX, self.R) + dist(resZ, self.Q) + dist(resZ0, self.Q0) \
             + logdet(self.R) * T + logdet(self.Q) * (T-1) + logdet(self.Q0)\
             - 0.5 * (self.dim_z + self.dim_x) * np.log(2*np.pi) * T
+
+

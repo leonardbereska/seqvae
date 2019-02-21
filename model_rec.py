@@ -3,6 +3,42 @@ import torch as tc
 import torch.nn.functional as F
 import numpy as np
 import helpers as h
+from matplotlib import pyplot as plt
+
+# TODO add RNN
+# TODO add DVAE
+
+
+class VAE(nn.Module):
+    def __init__(self, n_input, n_z):
+        super(VAE, self).__init__()
+        self.n_input = n_input
+        self.n_z = n_z
+        n_hidden = 10
+        self.fc1 = nn.Linear(n_input, n_hidden)
+        # self.fc2 = nn.Linear(n_hidden, n_hidden)
+        self.fc21 = nn.Linear(n_hidden, n_z)
+        self.fc22 = nn.Linear(n_hidden, n_z)
+        self.fc3 = nn.Linear(n_z, n_input, bias=False)  # observation model
+
+    def encode(self, x):
+        x = F.relu(self.fc1(x))
+        # x = F.relu(self.fc2(x))
+        return self.fc21(x), self.fc22(x)
+
+    def reparameterize(self, mu, logvar):
+        std = tc.exp(0.5*logvar)
+        eps = tc.randn_like(std)
+        return eps.mul(std).add_(mu)
+
+    def decode(self, z):
+        return self.fc3(F.relu(z))
+
+    def forward(self, x):
+        x = x.view(-1, self.n_input)
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        return self.decode(z), mu, logvar
 
 
 class StaticVAE(nn.Module):
@@ -74,13 +110,13 @@ class StaticVAE(nn.Module):
 
 class SequentialVAE(nn.Module):
 
-    def __init__(self, X, ts_par, hidden_size=10):
+    def __init__(self, X, args):
         super(SequentialVAE, self).__init__()
-        self.dim_z = ts_par['dim_z']
-        self.dim_x = ts_par['dim_x']
+        self.dim_z = args.dz
+        self.dim_x = args.dx
         self.dim_h = self.dim_x  # TODO tune hyper-parameters
         self.X = X.clone().detach().t()  # no need for dataloader, only one sample.
-        self.T = ts_par['len_t']
+        self.T = args.T
 
         self.fc1 = nn.Linear(self.dim_x, self.dim_h)
         self.fc_mu = nn.Linear(self.dim_h, self.dim_z)

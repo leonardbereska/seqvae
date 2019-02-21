@@ -2,7 +2,6 @@ import plrnn
 import torch as tc
 import torch.optim as optim
 
-
 def train_sgd(true_model):
     """
     Train a PLRNN directly with SGD (Stochastic Gradient Descent) on the complete log likelihood log p(X,Z)
