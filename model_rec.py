@@ -6,7 +6,7 @@ import helpers as h
 from matplotlib import pyplot as plt
 
 # TODO add RNN
-# TODO add DVAE
+# TODO add VAE
 
 
 class VAE(nn.Module):
@@ -41,6 +41,63 @@ class VAE(nn.Module):
         return self.decode(z), mu, logvar
 
 
+class DVAE(nn.Module):
+    def __init__(self, args, X_true):
+        super(DVAE, self).__init__()
+        self.X_true = X_true
+        self.n_input = args.dx
+        self.n_z = args.dz
+        n_hidden = 10
+        self.fc1 = nn.Linear(self.n_input, n_hidden)
+        self.fc2 = nn.Linear(n_hidden, n_hidden)
+        self.fc3 = nn.Linear(n_hidden, self.n_z)
+
+        self.h = nn.Parameter(tc.randn(1, self.n_z))  # first dim is batch
+        self.AW = nn.Parameter(tc.randn(self.n_z, self.n_z))
+
+        self.logS = nn.Parameter(tc.randn(1, self.n_z))
+        self.B = nn.Linear(self.n_z, self.n_input, bias=False)  # observation model
+
+    def print_par(self):
+        A = tc.diag(tc.diag(self.AW))
+        W = self.AW - A
+        print('A={}\n'.format(A))
+        print('B={}\n'.format(self.B.weight))
+        print('W={}\n'.format(W))
+        print('h={}\n'.format(self.h))
+        print('S={}\n'.format(tc.diag(tc.exp(self.logS).reshape([self.n_z,]))))
+
+    def encode(self, x):
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        z = self.fc3(x)
+        return z
+
+    def plrnn_step(self, z):
+        A = tc.diag(tc.diag(self.AW))
+        W = self.AW - A
+        a = tc.mm(z, A)
+
+        w = tc.mm(F.relu(z), W)
+        z = tc.add(tc.add(a, w), self.h)
+        return z
+
+    def reparametrize(self, mu):
+        std = tc.exp(0.5*self.logS)
+        eps = tc.randn_like(std)
+        return eps.mul(std) + mu
+
+    def decode(self, z):
+        return F.relu(self.B(z))
+
+    def forward(self, x):
+        x = x.view(-1, self.n_input)
+        zt1 = self.encode(x)
+        mu = self.plrnn_step(zt1)
+        zt2 = self.reparametrize(mu)
+        return self.decode(zt1), self.decode(zt2), mu, self.logS
+
+
 class StaticVAE(nn.Module):
     """
     Define a mean field variational approximate posterior (Recognition Model). Here,
@@ -65,7 +122,7 @@ class StaticVAE(nn.Module):
         self.fc_lam = nn.Linear(self.dim_h, self.dim_z*self.dim_z)
 
     def encode(self, x):
-        x = x.view(-1, self.dim_x)  # TODO account for batchsize
+        x = x.view(-1, self.dim_x)
         x = F.relu(self.fc1(x))
         mu = self.fc_mu(x)
         lam = self.fc_lam(x)
@@ -152,7 +209,7 @@ class SequentialVAE(nn.Module):
         diag_square = tc.bmm(A, b_t(A))  # make pos. semi-def.
         offd_square = tc.bmm(B, b_t(B))  # shape (T-1, dim_z, dim_z)
         offd_square = tc.cat((tc.zeros(1, self.dim_z, self.dim_z), offd_square))  # reshape from T-1 to T
-        pos_const = 1  # this seems to be needed, is the matrix not pos. semi-def. already?
+        pos_const = 10  # this seems to be needed, is the matrix not pos. semi-def. already?
         AA = tc.add(diag_square, offd_square).add(pos_const * tc.eye(self.dim_z))  # + positive constant
         BB = tc.bmm(A[:-1], b_t(B))  # what is this doing?
         # def is_psd(self, mat):
@@ -163,31 +220,51 @@ class SequentialVAE(nn.Module):
         # TODO how to assert that overall matrix is psd?
         return AA, BB
 
-    def forward(self, X):
+    # def forward(self, X):
+        # mu, A, B = self.encode(X)  # encode mean and covariance with neural net on observations
+        # AA, BB = self.make_psd(A, B)  # make positive semi-definite
+        # chol_A, chol_B = h.blk_tridag_chol(AA, BB)  # get cholesky from block tri-diagonal
+        # return mu, chol_A, chol_B
+
+    def forward(self):
+        X = self.X
         mu, A, B = self.encode(X)  # encode mean and covariance with neural net on observations
         AA, BB = self.make_psd(A, B)  # make positive semi-definite
         chol_A, chol_B = h.blk_tridag_chol(AA, BB)  # get cholesky from block tri-diagonal
-        return mu, chol_A, chol_B
+        r = self.get_inv_chol(chol_A, chol_B)
+
+        # eval entropy
+        thresh = 1e-5
+        r = tc.add(F.relu(tc.add(r, -thresh)), thresh)  # make positive, negative value would be nan after log
+        logdet_ = - tc.log(tc.einsum('tii->ti', r)).sum()  # -2 * 1/2
+        entropy = logdet_ + self.dim_x * self.T / 2. * (1 + np.log(2 * np.pi))
+
+        # sample
+        eps = tc.randn_like(mu)  # sample from normal distr. with mean mu and std s
+        r = tc.einsum('tij->tji', r)  # transpose TODO could be simplified
+        sample_z = mu + tc.einsum('tij,tj->ti', r, eps)  # equivalent to tc.bmv
+
+        return entropy, sample_z
 
     def get_inv_chol(self, A, B):
         b = tc.diag(tc.ones(self.dim_z)).expand(1, self.dim_z, self.dim_z).repeat(self.T, 1, 1)  # identity matrix
         inv_chol = h.blk_chol_inv(A, B, b)
         return inv_chol
 
-    def eval_entropy(self):
-        X = self.X
-        mu, A, B = self.forward(X)
-        r = self.get_inv_chol(A, B)
-        thresh = 1e-5
-        r = tc.add(F.relu(tc.add(r, -thresh)), thresh)  # make positive, negative value would be nan after log
-        logdet_ = - tc.log(tc.einsum('tii->ti', r)).sum()  # -2 * 1/2
-        return logdet_ + self.dim_x * self.T / 2. * (1 + np.log(2 * np.pi))
-
-    def sample(self):
-        X = self.X  # "sample" observations (only one time series)
-        mu, A, B = self.forward(X)  # get mean and tridiagonal form of cholesky of covariance
-        r = self.get_inv_chol(A, B)
-        eps = tc.randn_like(mu)  # sample from normal distr. with mean mu and std s
-        r = tc.einsum('tij->tji', r)  # transpose TODO could be simplified
-        z = mu + tc.einsum('tij,tj->ti', r, eps)  # equivalent to tc.bmv
-        return z  # shape (T, dim_z)
+    # def eval_entropy(self):
+        # X = self.X
+        # mu, A, B = self.forward(X)
+        # r = self.get_inv_chol(A, B)
+        # thresh = 1e-5
+        # r = tc.add(F.relu(tc.add(r, -thresh)), thresh)  # make positive, negative value would be nan after log
+        # logdet_ = - tc.log(tc.einsum('tii->ti', r)).sum()  # -2 * 1/2
+        # return logdet_ + self.dim_x * self.T / 2. * (1 + np.log(2 * np.pi))
+#
+    # def sample(self):
+        # X = self.X  # "sample" observations (only one time series)
+        # mu, A, B = self.forward(X)  # get mean and tridiagonal form of cholesky of covariance
+        # r = self.get_inv_chol(A, B)
+        # eps = tc.randn_like(mu)  # sample from normal distr. with mean mu and std s
+        # r = tc.einsum('tij->tji', r)  # transpose TODO could be simplified
+        # z = mu + tc.einsum('tij,tj->ti', r, eps)  # equivalent to tc.bmv
+        # # # return z  # shape (T, dim_z)

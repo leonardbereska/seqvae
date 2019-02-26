@@ -24,10 +24,10 @@ class PLRNN(nn.Module):
         self.len_t = args.T
 
         f = 0.5  # AW needs to be positive semi-definite, works ok
-        mat = f * (tc.rand(self.dim_z, self.dim_z) - 1)  # some matrix with values between -0.5 and 0.5
+        mat = (tc.rand(self.dim_z, self.dim_z) - 1) * f # some matrix with values between -0.5 and 0.5
         mat = tc.mm(mat, mat.t())  # symmetric positive semi-def.
-        # max_ev = tc.max(tc.symeig(mat))
-        # mat /= max_ev  # stability criterion: divide by eigenvalues
+        max_ev = max(tc.symeig(mat)[0])
+        mat /= (max_ev * 1.3)  # stability criterion: divide by eigenvalues
         self.AW = nn.Parameter(mat)
 
         self.h = nn.Parameter(tc.randn(self.dim_z, ))  # first dim is batch
@@ -40,15 +40,17 @@ class PLRNN(nn.Module):
         self.Z = nn.Parameter(tc.randn(self.dim_z, self.len_t))
         self.z0 = nn.Parameter(tc.randn(self.dim_z))
 
-    def show(self, block=False):
+    def show(self, X_true, Z_true, block=False):
         plt.subplot(121)
         plt.title('latent states')
         plt.xlabel('time')
-        plt.plot(list(range(0, self.len_t)), self.Z.t().detach().numpy())
+        # print(Z_true.shape)
+        # print(len(X_true.t()))
+        plt.plot(list(range(0, len(X_true.t()))), Z_true.t().numpy())
         plt.subplot(122)
         plt.title('observations')
         plt.xlabel('time')
-        plt.plot(list(range(0, self.len_t)), self.X.t().detach().numpy())
+        plt.plot(list(range(0, len(X_true.t()))), X_true.t().numpy())
         plt.show(block=block)
 
     def print_par(self):
@@ -89,6 +91,14 @@ class PLRNN(nn.Module):
         return X, Z
 
     def eval_logdensity(self, X, Z):
+        # if AW is None:
+            # AW = self.AW
+        # if B is None:
+            # B = self.B
+        # if h is None:
+            # h = self.h.unsqueeze(1)
+        # else:
+            # h = h.squeeze().unsqueeze(1)
         A = tc.diag(tc.diag(self.AW))
         W = self.AW - A
         T = X.shape[1]
@@ -96,6 +106,7 @@ class PLRNN(nn.Module):
 
         Zt = Z[:, 0:(T-1)]
         resZ = Z[:, 1:] - A @ Zt - W @ F.relu(Zt) - self.h.unsqueeze(1)
+
         resZ0 = (self.z0 - Z[:, 0]).unsqueeze(1)
 
         def dist(res, mat):
@@ -107,5 +118,3 @@ class PLRNN(nn.Module):
         return dist(resX, self.R) + dist(resZ, self.Q) + dist(resZ0, self.Q0) \
             + logdet(self.R) * T + logdet(self.Q) * (T-1) + logdet(self.Q0)\
             - 0.5 * (self.dim_z + self.dim_x) * np.log(2*np.pi) * T
-
-
