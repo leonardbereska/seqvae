@@ -2,7 +2,7 @@ import torch.nn as nn
 import torch as tc
 import torch.nn.functional as F
 import numpy as np
-import helpers as h
+import calc_blk as calc
 from matplotlib import pyplot as plt
 
 # TODO add RNN
@@ -175,7 +175,7 @@ class SequentialVAE(nn.Module):
         self.X = X.clone().detach().t()  # no need for dataloader, only one sample.
         self.T = args.T
 
-        self.fc1 = nn.Linear(self.dim_x, self.dim_h)
+        self.fc1 = nn.Linear(self.dim_x, self.dim_h)  # TODO tune architecture
         self.fc_mu = nn.Linear(self.dim_h, self.dim_z)
         self.fc_A = nn.Linear(self.dim_h, self.dim_z * self.dim_z)  # A = NN(xt)
         self.fc_B = nn.Linear(2 * self.dim_h, self.dim_z * self.dim_z)  # B = NN(xt, xt-1)
@@ -183,7 +183,7 @@ class SequentialVAE(nn.Module):
     def encode(self, x):
         """
         Encode mean (mu) and blocks of covariance matrix (A diagonal, B off-diagonal)
-        :param x: observation at t
+        :param x: observation: (T, dim_x)
         :return: mu, A, B
         """
         x = x.view(-1, self.dim_x)  # TODO account for batchsize
@@ -193,7 +193,7 @@ class SequentialVAE(nn.Module):
         A = self.fc_A(x)
         B = self.fc_B(tc.cat((x[1:], x[:-1]), dim=1))
 
-        A = A.view(-1, self.dim_z, self.dim_z)
+        A = A.view(-1, self.dim_z, self.dim_z) + tc.eye(self.dim_z)  # TODO is adding the tc.eye really necessary? why?
         B = B.view(-1, self.dim_z, self.dim_z)
 
         return mu, A, B
@@ -209,9 +209,10 @@ class SequentialVAE(nn.Module):
         diag_square = tc.bmm(A, b_t(A))  # make pos. semi-def.
         offd_square = tc.bmm(B, b_t(B))  # shape (T-1, dim_z, dim_z)
         offd_square = tc.cat((tc.zeros(1, self.dim_z, self.dim_z), offd_square))  # reshape from T-1 to T
-        pos_const = 10  # this seems to be needed, is the matrix not pos. semi-def. already?
+        pos_const = 1e-6  # this seems to be needed, is the matrix not pos. semi-def. already?
         AA = tc.add(diag_square, offd_square).add(pos_const * tc.eye(self.dim_z))  # + positive constant
-        BB = tc.bmm(A[:-1], b_t(B))  # what is this doing?
+        # BB = tc.bmm(A[:-1], b_t(B))  # what is this doing?
+        BB = tc.bmm(B, b_t(A[:-1]))  # what is this doing?
         # def is_psd(self, mat):
         # ev, _ = tc.symeig(mat)
         # return (ev >= 0).sum() == len(ev)  # are all Eigenvalues greater equal zero?
@@ -227,10 +228,10 @@ class SequentialVAE(nn.Module):
         # return mu, chol_A, chol_B
 
     def forward(self):
-        X = self.X
-        mu, A, B = self.encode(X)  # encode mean and covariance with neural net on observations
+        X = self.X  # (T, dim_X)
+        mu, A, B = self.encode(X)  # encode mean and covariance with neural net on observations: mu(T, dim_z), A(T, dim_z, dim_z)
         AA, BB = self.make_psd(A, B)  # make positive semi-definite
-        chol_A, chol_B = h.blk_tridag_chol(AA, BB)  # get cholesky from block tri-diagonal
+        chol_A, chol_B = calc.blk_tridag_chol(AA, BB)  # get cholesky from block tri-diagonal
         r = self.get_inv_chol(chol_A, chol_B)
 
         # eval entropy
@@ -248,23 +249,5 @@ class SequentialVAE(nn.Module):
 
     def get_inv_chol(self, A, B):
         b = tc.diag(tc.ones(self.dim_z)).expand(1, self.dim_z, self.dim_z).repeat(self.T, 1, 1)  # identity matrix
-        inv_chol = h.blk_chol_inv(A, B, b)
+        inv_chol = calc.blk_chol_inv(A, B, b)
         return inv_chol
-
-    # def eval_entropy(self):
-        # X = self.X
-        # mu, A, B = self.forward(X)
-        # r = self.get_inv_chol(A, B)
-        # thresh = 1e-5
-        # r = tc.add(F.relu(tc.add(r, -thresh)), thresh)  # make positive, negative value would be nan after log
-        # logdet_ = - tc.log(tc.einsum('tii->ti', r)).sum()  # -2 * 1/2
-        # return logdet_ + self.dim_x * self.T / 2. * (1 + np.log(2 * np.pi))
-#
-    # def sample(self):
-        # X = self.X  # "sample" observations (only one time series)
-        # mu, A, B = self.forward(X)  # get mean and tridiagonal form of cholesky of covariance
-        # r = self.get_inv_chol(A, B)
-        # eps = tc.randn_like(mu)  # sample from normal distr. with mean mu and std s
-        # r = tc.einsum('tij->tji', r)  # transpose TODO could be simplified
-        # z = mu + tc.einsum('tij,tj->ti', r, eps)  # equivalent to tc.bmv
-        # # # return z  # shape (T, dim_z)

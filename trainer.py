@@ -1,16 +1,17 @@
 import torch as tc
 import torch.optim as optim
-import dataset
+# import dataset
 import model_gen
 
 
 class Trainer:
-    def __init__(self, args, writer, X_true, rec_model, gen_model):
+    def __init__(self, args, writer, Z_true, X_true, rec_model, gen_model, true_model):
 
         self.dim_x = args.dx
         self.dim_z = args.dz
         self.len_t = args.T
 
+        self.Z_true = Z_true
         self.X_true = X_true
         self.verbose = args.verbose
 
@@ -21,6 +22,7 @@ class Trainer:
 
         self.rec_model = rec_model.to(self.device)
         self.gen_model = gen_model.to(self.device)
+        self.true_model = true_model
         self.optimizer = optim.Adam(list(self.rec_model.parameters())+list(gen_model.parameters()), lr=args.lr)
 
         self.n_epochs = args.n_epochs
@@ -48,7 +50,7 @@ class Trainer:
         for epoch in range(1, self.n_epochs + 1):
             loss = step(epoch)
             # diff = loss - loss_prev
-            # if diff > diff_prev:  # TODO think about criterion
+            # if diff > diff_prev:  # TODO think about convergence criterion
                 # counter += 1
             # else:
                 # counter = 0
@@ -57,25 +59,31 @@ class Trainer:
             # if counter >= 5:
                 # break
 
+    def test(self):
+        n_steps = self.len_t
+        z0 = self.Z_true[:, -1]
+        X_test, Z_test = self.gen_model.get_timeseries(z0=z0, T=n_steps, noise=True)
+        return self.true_model.eval_logdensity(X_test, Z_test)
 
 
 class SGDTrainer(Trainer):
-    def __init__(self, args, writer, X_true, rec_model, gen_model):
-        super(SGDTrainer, self).__init__(args, writer, X_true, rec_model, gen_model)
+    def __init__(self, args, writer, Z_true, X_true, rec_model, gen_model, true_model):
+        super(SGDTrainer, self).__init__(args, writer, Z_true, X_true, rec_model, gen_model, true_model)
         # lr = 2e-4
         # n_epochs  15000
 
     def loss_function(self, epoch):
-        logdensity = self.rec_model.eval_logdensity(self.X_true, self.rec_model.Z)
+        logdensity = self.gen_model.eval_logdensity(self.X_true, self.rec_model.Z)
         self.writer.add_scalar(tag='likelihood', scalar_value=logdensity, global_step=epoch)
         if epoch % self.log_interval == 0 and self.verbose > 0:
-                    print('Epoch: {} Log Density: {:.4f}'.format(epoch, logdensity))
+                    test_ll = self.test()
+                    print('Epoch: {} Train LL: {:.4f} Test LL: {:.4f}'.format(epoch, logdensity, test_ll))
         return - logdensity
 
 
 class SeqVAETrainer(Trainer):
-    def __init__(self, args, writer, X_true, rec_model, gen_model):
-        super(SeqVAETrainer, self).__init__(args, writer, X_true, rec_model, gen_model)
+    def __init__(self, args, writer, Z_true, X_true, rec_model, gen_model, true_model):
+        super(SeqVAETrainer, self).__init__(args, writer, Z_true, X_true, rec_model, gen_model, true_model)
 
     def loss_function(self, epoch):
             """
@@ -88,8 +96,11 @@ class SeqVAETrainer(Trainer):
             self.writer.add_scalar(tag='likelihood', scalar_value=likelihood, global_step=epoch)
             self.writer.add_scalar(tag='entropy', scalar_value=entropy, global_step=epoch)
             if epoch % self.log_interval == 0 and self.verbose > 0:
-                    print('Epoch: {} Entropy: {:.4f} Likelihood: {:.4f}'.format(epoch, entropy, likelihood))
+                    test_ll = self.test()
+                    print('Epoch: {} Entropy: {:.4f} Likelihood: {:.4f} Test LL: {:.4f}'.format(epoch, entropy, likelihood, test_ll))
             return - (likelihood + entropy) / self.len_t
+
+
 
 
 class DVAETrainer(Trainer):
